@@ -3,20 +3,16 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 import nibabel as nib
-from utils.resize import resize_xy_and_crop_z
+from utils.monai_downsampling_reshape import monai_resize
+
 
 class BraTSDataset(Dataset):
     def __init__(self, data_dir, case_list, transform=None):
-        """
-        Args:
-            data_dir (str): 환자 케이스 폴더들이 있는 상위 디렉토리 경로
-            case_list (list): 사용할 환자 폴더 이름 리스트
-            transform (callable, optional): (image, label) -> (image, label)
-        """
         self.data_dir = data_dir
         self.case_list = case_list
         self.transform = transform
-        self.modalities = ['t1c', 't1n', 't2f', 't2w']  # 4가지 MRI 모달리티
+        self.modalities = ['t1c', 't1n', 't2f', 't2w']
+        # self.aug_num = [0,1,2,3,4]
 
     def __len__(self):
         return len(self.case_list)
@@ -25,34 +21,75 @@ class BraTSDataset(Dataset):
         case = self.case_list[idx]
         case_path = os.path.join(self.data_dir, case)
 
-        # ========= 4채널 이미지 로딩 =========
+        # --- 이미지 로딩 및 MONAI 리사이즈 ---
         images = []
-        for modality in self.modalities:
-            img_path = os.path.join(case_path, f'{case}-{modality}.nii.gz')
-            img = nib.load(img_path).get_fdata().astype(np.float32)  # shape: [H, W, D]
+        for mod in self.modalities:
+            img = nib.load(os.path.join(case_path, f'{case}-{mod}.nii.gz')).get_fdata().astype(np.float32)
             images.append(img)
-        images = np.stack(images, axis=0)  # shape: [4, H, W, D]
+        images = np.stack(images, axis=0)  # [4, H, W, D]
+        images = monai_resize(images, is_mask=False)  # [4, 128, 128, 32]4
 
-        # ========= 세그멘테이션 마스크 로딩 =========
-        seg_path = os.path.join(case_path, f'{case}-seg.nii.gz')
-        seg = nib.load(seg_path).get_fdata().astype(np.int64)  # shape: [H, W, D]
-        seg = np.clip(seg, 0, 4)  # 클래스 레이블은 0~4만 허용
-
-        # # resize
-        # images = np.stack(images, axis=0)  # [4, H, W, D]
-        # images = resize_xy_and_crop_z(images, target_xy=128, target_z=32, order=3)
-        #
-        # seg = resize_xy_and_crop_z(seg, target_xy=128, target_z=32, order=0)  # mask는 order=0 (nearest)
-
-        # ========= intensity 정규화 =========
+        # --- 정규화 ---
         images = (images - images.mean()) / (images.std() + 1e-8)
 
-        # ========= numpy → torch tensor =========
-        images = torch.from_numpy(images).float()  # shape: [4, H, W, D]
-        seg = torch.from_numpy(seg).long()         # shape: [H, W, D]
+        # --- 변환 ---
+        images = torch.from_numpy(images).float()
 
-        # ========= transform 적용 (선택) =========
+        # --- 마스크 로딩 (GT는 원본 해상도 유지) ---
+        seg = nib.load(os.path.join(case_path, f'{case}-seg.nii.gz')).get_fdata().astype(np.int64)
+        seg = np.clip(seg, 0, 4)
+
+        # --- 변환 ---
+        seg = torch.from_numpy(seg).long()
+
         if self.transform:
             images, seg = self.transform(images, seg)
 
         return images, seg
+
+import numpy as np
+import torch
+from collections import Counter
+
+def compute_class_distribution(dataset, max_samples=20):
+    label_counter = Counter()
+    total_voxels = 0
+
+    for i in range(min(len(dataset), max_samples)):
+        _, seg = dataset[i]  # seg: torch.Tensor [H, W, D]
+        labels, counts = torch.unique(seg, return_counts=True)
+
+        for label, count in zip(labels.tolist(), counts.tolist()):
+            label_counter[int(label)] += count
+            total_voxels += count
+
+    print("📊 클래스별 비율 (상위 {}개 샘플 기준):".format(max_samples))
+    for label in sorted(label_counter.keys()):
+        ratio = label_counter[label] / total_voxels * 100
+        print(f"  🔹 클래스 {label}: {label_counter[label]:,} voxels ({ratio:.2f}%)")
+
+# ==========================
+# 🔍 직접 실행할 경우 테스트 코드
+# ==========================
+if __name__ == "__main__":
+    from torch.utils.data import DataLoader
+
+    data_dir = "../data/BraTS-PEDs2024_Training"
+    case_list = sorted([
+        name for name in os.listdir(data_dir)
+        if os.path.isdir(os.path.join(data_dir, name)) and not name.startswith(".")
+    ])  # 상위 10개 케이스만 확인
+    samples = len(case_list)
+    dataset = BraTSDataset(data_dir, case_list)
+
+    compute_class_distribution(dataset, max_samples=samples)  # 20개만 확인
+    all_labels = []
+    for i in range(len(dataset)):
+        img, seg = dataset[i]
+        # print(i,"번째")
+    #     print(f"✅ image shape: {img.shape}, dtype: {img.dtype}, range: ({img.min():.2f}, {img.max():.2f})")
+    #     print(f"✅ mask shape: {seg.shape}, unique values: {torch.unique(seg)}")
+        all_labels.append(torch.unique(seg))
+
+    flat = torch.cat(all_labels)
+    print("\n💡 전체 라벨 분포 (상위 10개 기준):", torch.unique(flat))

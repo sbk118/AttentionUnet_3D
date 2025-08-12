@@ -1,6 +1,6 @@
-from datasets.dataset_v3 import BraTSDataset
+from datasets.dataset import BraTSDataset
 from torch.utils.data import DataLoader, random_split
-from Attention_UNet_3D.segmentation.attention_unet_3d import UNet3D
+from Attention_Unet_3D.segmentation.attention_unet_3d import UNet3D
 from train import train
 from eval import evaluate
 import torch

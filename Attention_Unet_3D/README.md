@@ -4,6 +4,7 @@ Prediction using 3D Attention UNet" [preprint](https://arxiv.org/pdf/2104.00985.
 
 The baseline implementation of UNet3D is adopted from<br>
 SSD: https://github.com/wolny/pytorch-3dunet<br>
+\+ https://github.com/mobarakol/3D_Attention_UNet<br>
 
 ## Dataset
 [Multimodal Brain Tumor Segmentation Challenge 2019 (BraTS)](https://www.med.upenn.edu/cbica/brats2019/data.html)<br>
